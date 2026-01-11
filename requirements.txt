@@ -1,0 +1,9 @@
+# OBDD Visualizer Requirements
+# 
+# Note: tkinter is part of the Python standard library
+# It may need to be installed separately on some systems:
+#   Ubuntu/Debian: sudo apt-get install python3-tk
+#   Fedora: sudo dnf install python3-tkinter
+#   macOS: brew install python-tk
+#
+# No additional Python packages are required.
