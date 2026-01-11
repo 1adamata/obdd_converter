@@ -23,7 +23,7 @@ A Python 3 Tkinter application for visually creating Ordered Binary Decision Dia
 ## Running the Application
 
 ```bash
-python3 obdd_visualizer.py
+python3 main.py
 ```
 
 ## Keyboard Shortcuts
@@ -34,6 +34,8 @@ python3 obdd_visualizer.py
 - **0**: Connect selected node with a 0-edge (dashed line)
 - **D**: Delete all outgoing edges from selected node
 - **ESC**: Cancel current operation
+- **E**: Export OBDD to JSON
+- **I**: Import OBDD from JSON
 
 ## Usage
 
@@ -46,6 +48,9 @@ python3 obdd_visualizer.py
    - Press '1' for a 1-edge or '0' for a 0-edge
    - Click on the target node to complete the connection
 6. **Deleting Edges**: Select a node and press 'D' to remove all its outgoing edges
+7. **Export/Import**:
+   - Press 'E' to export the diagram to JSON
+   - Press 'I' to import a JSON file and rebuild the diagram
 
 ## Terminal Nodes
 

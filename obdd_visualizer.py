@@ -10,8 +10,9 @@ Features:
 - Keyboard shortcuts for operations
 """
 
+import json
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog, filedialog
 import math
 
 
@@ -37,6 +38,99 @@ class Node:
     def clear_edges(self):
         """Remove all outgoing edges."""
         self.edges_out = []
+
+    def get_edge_target(self, edge_type):
+        """Get the target node ID for a given edge type (0 or 1)."""
+        for target_id, etype in self.edges_out:
+            if etype == edge_type:
+                return target_id
+        return None
+
+
+class OBDDSerializer:
+    """Serialize and deserialize OBDD data to/from JSON."""
+
+    @staticmethod
+    def to_dict(nodes, root_id):
+        """Convert nodes and root info to a JSON-serializable dict."""
+        payload = {"nodes": [], "root": root_id}
+        for node in nodes.values():
+            entry = {
+                "id": node.id,
+                "label": node.label,
+                "x": node.x,
+                "y": node.y,
+                "is_terminal": node.is_terminal,
+            }
+            if not node.is_terminal:
+                entry["low"] = node.get_edge_target(0)
+                entry["high"] = node.get_edge_target(1)
+            payload["nodes"].append(entry)
+        return payload
+
+    @staticmethod
+    def from_dict(data):
+        """Build nodes and root ID from a dict representation."""
+        if not isinstance(data, dict):
+            raise ValueError("JSON root must be an object.")
+        nodes_data = data.get("nodes")
+        if not isinstance(nodes_data, list):
+            raise ValueError("JSON must include a 'nodes' list.")
+
+        nodes = {}
+        for entry in nodes_data:
+            if not isinstance(entry, dict):
+                raise ValueError("Each node entry must be an object.")
+            for key in ("id", "label", "x", "y", "is_terminal"):
+                if key not in entry:
+                    raise ValueError(f"Node is missing '{key}'.")
+            node_id = entry["id"]
+            if node_id in nodes:
+                raise ValueError(f"Duplicate node id {node_id}.")
+            node = Node(
+                node_id,
+                entry["x"],
+                entry["y"],
+                entry["label"],
+                is_terminal=bool(entry["is_terminal"]),
+            )
+            nodes[node.id] = node
+
+        terminal_labels = {node.label for node in nodes.values() if node.is_terminal}
+        if "0" not in terminal_labels or "1" not in terminal_labels:
+            raise ValueError("Import requires terminal nodes labeled '0' and '1'.")
+
+        for entry in nodes_data:
+            node = nodes[entry["id"]]
+            if node.is_terminal:
+                continue
+            low = entry.get("low")
+            high = entry.get("high")
+            if low is not None:
+                if low not in nodes:
+                    raise ValueError(f"Low target {low} does not exist.")
+                node.add_edge(low, 0)
+            if high is not None:
+                if high not in nodes:
+                    raise ValueError(f"High target {high} does not exist.")
+                node.add_edge(high, 1)
+
+        root_id = data.get("root")
+        if root_id is not None and root_id not in nodes:
+            raise ValueError("Root node id does not exist.")
+        return nodes, root_id
+
+    @staticmethod
+    def save_json(path, data):
+        """Save JSON data to disk."""
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+
+    @staticmethod
+    def load_json(path):
+        """Load JSON data from disk."""
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
 
 
 class OBDDVisualizer:
@@ -97,13 +191,27 @@ class OBDDVisualizer:
         self.canvas.bind('<B1-Motion>', self.on_canvas_drag)
         self.canvas.bind('<ButtonRelease-1>', self.on_canvas_release)
         
-        # Control panel
-        control_frame = tk.Frame(main_frame, width=200, bg='lightgray')
-        control_frame.pack(side=tk.RIGHT, fill=tk.Y)
-        control_frame.pack_propagate(False)
+        # Control panel (scrollable)
+        control_container = tk.Frame(main_frame, width=220, bg='lightgray')
+        control_container.pack(side=tk.RIGHT, fill=tk.Y)
+        control_container.pack_propagate(False)
+
+        control_canvas = tk.Canvas(control_container, bg='lightgray', highlightthickness=0)
+        control_scrollbar = tk.Scrollbar(control_container, orient=tk.VERTICAL, command=control_canvas.yview)
+        control_canvas.configure(yscrollcommand=control_scrollbar.set)
+        control_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        control_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        control_frame = tk.Frame(control_canvas, bg='lightgray')
+        control_canvas.create_window((0, 0), window=control_frame, anchor='nw')
+
+        def update_control_scrollregion(event):
+            control_canvas.configure(scrollregion=control_canvas.bbox("all"))
+
+        control_frame.bind("<Configure>", update_control_scrollregion)
         
         # Title
-        title = tk.Label(control_frame, text="OBDD Visualizer", font=('Arial', 14, 'bold'), bg='lightgray')
+        title = tk.Label(control_frame, text="OBDD Visualizer", font=('Arial', 12, 'bold'), bg='lightgray')
         title.pack(pady=10)
         
         # Instructions
@@ -122,7 +230,9 @@ R: Set root node
 1: Connect 1-edge
 0: Connect 0-edge
 D: Delete outgoing edges
-        DEL/X: Delete node
+DEL/X: Delete node
+E: Export JSON
+I: Import JSON
 ESC: Cancel operation
         """
         
@@ -138,45 +248,85 @@ ESC: Cancel operation
         # Buttons
         tk.Button(
             control_frame,
-            text="Add Decision Node (N)",
-            command=self.add_decision_node
+            text="Add Node (N)",
+            command=self.add_decision_node,
+            wraplength=180,
+            justify=tk.CENTER
         ).pack(pady=5, padx=10, fill=tk.X)
         
         tk.Button(
             control_frame,
             text="Set Root (R)",
-            command=self.set_root_node
+            command=self.set_root_node,
+            wraplength=180,
+            justify=tk.CENTER
         ).pack(pady=5, padx=10, fill=tk.X)
         
         tk.Button(
             control_frame,
-            text="Connect 1-Edge (1)",
-            command=lambda: self.start_edge_connection(1)
+            text="Connect 1-edge (1)",
+            command=lambda: self.start_edge_connection(1),
+            wraplength=180,
+            justify=tk.CENTER
         ).pack(pady=5, padx=10, fill=tk.X)
         
         tk.Button(
             control_frame,
-            text="Connect 0-Edge (0)",
-            command=lambda: self.start_edge_connection(0)
+            text="Connect 0-edge (0)",
+            command=lambda: self.start_edge_connection(0),
+            wraplength=180,
+            justify=tk.CENTER
         ).pack(pady=5, padx=10, fill=tk.X)
         
         tk.Button(
             control_frame,
             text="Delete Edges (D)",
-            command=self.delete_outgoing_edges
+            command=self.delete_outgoing_edges,
+            wraplength=180,
+            justify=tk.CENTER
         ).pack(pady=5, padx=10, fill=tk.X)
         
         tk.Button(
             control_frame,
             text="Delete Node (Del/X)",
-            command=self.delete_node
+            command=self.delete_node,
+            wraplength=180,
+            justify=tk.CENTER
         ).pack(pady=5, padx=10, fill=tk.X)
         
         tk.Button(
             control_frame,
             text="Clear All",
-            command=self.clear_all
-        ).pack(pady=20, padx=10, fill=tk.X)
+            command=self.clear_all,
+            wraplength=180,
+            justify=tk.CENTER
+        ).pack(pady=15, padx=10, fill=tk.X)
+
+        tk.Button(
+            control_frame,
+            text="Export JSON (E)",
+            command=self.export_json,
+            wraplength=180,
+            justify=tk.CENTER
+        ).pack(pady=5, padx=10, fill=tk.X)
+
+        tk.Button(
+            control_frame,
+            text="Import JSON (I)",
+            command=self.import_json,
+            wraplength=180,
+            justify=tk.CENTER
+        ).pack(pady=5, padx=10, fill=tk.X)
+
+        self.mode_label = tk.Label(
+            control_frame,
+            text="Mode: Ready",
+            font=('Arial', 9),
+            bg='lightgray',
+            fg='black',
+            wraplength=180
+        )
+        self.mode_label.pack(side=tk.BOTTOM, pady=2)
         
         # Status label
         self.status_label = tk.Label(
@@ -188,6 +338,7 @@ ESC: Cancel operation
             wraplength=180
         )
         self.status_label.pack(side=tk.BOTTOM, pady=10)
+        self.update_mode("Ready")
         
     def setup_keybindings(self):
         """Setup keyboard shortcuts."""
@@ -203,6 +354,10 @@ ESC: Cancel operation
         self.root.bind('x', lambda e: self.delete_node())
         self.root.bind('X', lambda e: self.delete_node())
         self.root.bind('<Escape>', lambda e: self.cancel_operation())
+        self.root.bind('e', lambda e: self.export_json())
+        self.root.bind('E', lambda e: self.export_json())
+        self.root.bind('i', lambda e: self.import_json())
+        self.root.bind('I', lambda e: self.import_json())
         
     def create_initial_nodes(self):
         """Create the initial terminal nodes 0 and 1."""
@@ -222,7 +377,7 @@ ESC: Cancel operation
         self.next_node_id += 1
         return node_id
         
-    def get_next_variable_label(self):
+    def get_next_variable_label(self, consume=True):
         """Get the next variable label (p, q, r, s, ...)."""
         labels = ['p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
         if self.next_var_index < len(labels):
@@ -230,7 +385,8 @@ ESC: Cancel operation
         else:
             # If we run out of single letters, use p1, p2, ...
             label = f'p{self.next_var_index - len(labels) + 1}'
-        self.next_var_index += 1
+        if consume:
+            self.next_var_index += 1
         return label
         
     def add_decision_node(self):
@@ -243,12 +399,23 @@ ESC: Cancel operation
             x = self.CANVAS_WIDTH // 2
             y = self.CANVAS_HEIGHT // 3
             
-        label = self.get_next_variable_label()
+        suggested_label = self.get_next_variable_label(consume=False)
+        label_input = simpledialog.askstring(
+            "New Decision Node",
+            f"Enter node label (default: {suggested_label})",
+            initialvalue=suggested_label
+        )
+        if label_input is None:
+            self.update_status("Add node cancelled")
+            return
+        label = label_input.strip() or suggested_label
+        self.next_var_index += 1
         node = Node(self.get_next_node_id(), x, y, label, is_terminal=False)
         self.nodes[node.id] = node
         self.draw_node(node)
         
         self.update_status(f"Added decision node '{label}'")
+        self.update_mode("Ready")
         
     def draw_node(self, node):
         """Draw a node on the canvas."""
@@ -263,12 +430,13 @@ ESC: Cancel operation
             y1 = node.y - self.TERMINAL_NODE_SIZE // 2
             x2 = node.x + self.TERMINAL_NODE_SIZE // 2
             y2 = node.y + self.TERMINAL_NODE_SIZE // 2
+            outline = 'red' if node.id == self.selected_node else 'black'
             
             square = self.canvas.create_rectangle(
                 x1, y1, x2, y2,
                 fill='lightblue',
-                outline='black',
-                width=2,
+                outline=outline,
+                width=3 if node.id == self.selected_node else 2,
                 tags=f'node_{node.id}'
             )
             node.canvas_items.append(square)
@@ -278,12 +446,13 @@ ESC: Cancel operation
             y1 = node.y - self.DECISION_NODE_RADIUS
             x2 = node.x + self.DECISION_NODE_RADIUS
             y2 = node.y + self.DECISION_NODE_RADIUS
+            outline = 'red' if node.id == self.selected_node else 'black'
             
             circle = self.canvas.create_oval(
                 x1, y1, x2, y2,
                 fill='lightyellow',
-                outline='black',
-                width=2,
+                outline=outline,
+                width=3 if node.id == self.selected_node else 2,
                 tags=f'node_{node.id}'
             )
             node.canvas_items.append(circle)
@@ -413,14 +582,22 @@ ESC: Cancel operation
         else:
             # Normal click - select node and prepare for dragging
             if clicked_node is not None:
+                previous_selected = self.selected_node
                 self.selected_node = clicked_node
                 self.dragging = True
                 self.drag_start_x = event.x
                 self.drag_start_y = event.y
+                if previous_selected is not None and previous_selected in self.nodes:
+                    self.draw_node(self.nodes[previous_selected])
+                self.draw_node(self.nodes[clicked_node])
                 self.update_status(f"Selected node '{self.nodes[clicked_node].label}'")
             else:
+                previous_selected = self.selected_node
                 self.selected_node = None
+                if previous_selected is not None and previous_selected in self.nodes:
+                    self.draw_node(self.nodes[previous_selected])
                 self.update_status("Ready")
+                self.update_mode("Ready")
                 
     def on_canvas_drag(self, event):
         """Handle canvas drag events."""
@@ -480,6 +657,7 @@ ESC: Cancel operation
         self.draw_all_edges()
         
         self.update_status(f"Set '{self.nodes[self.selected_node].label}' as root node")
+        self.update_mode("Ready")
         
     def start_edge_connection(self, edge_type):
         """Start the edge connection mode."""
@@ -500,6 +678,7 @@ ESC: Cancel operation
             f"Click on target node to connect {edge_type}-edge from "
             f"'{self.nodes[self.selected_node].label}' (ESC to cancel)"
         )
+        self.update_mode(f"Connecting {edge_type}-edge from '{self.nodes[self.selected_node].label}'")
         
     def delete_outgoing_edges(self):
         """Delete all outgoing edges from the selected node."""
@@ -514,6 +693,7 @@ ESC: Cancel operation
             self.update_status(f"Deleted outgoing edges from '{node.label}'")
         else:
             self.update_status(f"Node '{node.label}' has no outgoing edges")
+        self.update_mode("Ready")
 
     def delete_node(self):
         """Delete the currently selected decision node."""
@@ -557,6 +737,7 @@ ESC: Cancel operation
         # Redraw edges to reflect removal
         self.draw_all_edges()
         self.update_status(f"Deleted node '{node.label}'")
+        self.update_mode("Ready")
             
     def cancel_operation(self):
         """Cancel the current operation."""
@@ -565,6 +746,7 @@ ESC: Cancel operation
         self.connecting_from_node = None
         self.canvas.config(cursor='arrow')
         self.update_status("Operation cancelled - Ready")
+        self.update_mode("Ready")
         
     def clear_all(self):
         """Clear all nodes except terminal nodes."""
@@ -588,10 +770,82 @@ ESC: Cancel operation
             self.connecting_from_node = None
             self.canvas.config(cursor='arrow')
             self.update_status("Cleared all decision nodes")
+            self.update_mode("Ready")
             
     def update_status(self, message):
         """Update the status label."""
         self.status_label.config(text=message)
+
+    def update_mode(self, message):
+        """Update the mode label."""
+        self.mode_label.config(text=f"Mode: {message}")
+
+    def get_root_id(self):
+        """Return the current root node ID, or None if not set."""
+        for node in self.nodes.values():
+            if node.is_root:
+                return node.id
+        return None
+
+    def export_json(self):
+        """Export the current OBDD to a JSON file."""
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")],
+            title="Export OBDD"
+        )
+        if not path:
+            self.update_status("Export cancelled")
+            return
+        data = OBDDSerializer.to_dict(self.nodes, self.get_root_id())
+        try:
+            OBDDSerializer.save_json(path, data)
+        except OSError as exc:
+            messagebox.showerror("Export Failed", f"Could not save file:\n{exc}")
+            return
+        self.update_status(f"Exported OBDD to {path}")
+
+    def import_json(self):
+        """Import an OBDD from a JSON file."""
+        path = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json")],
+            title="Import OBDD"
+        )
+        if not path:
+            self.update_status("Import cancelled")
+            return
+        try:
+            data = OBDDSerializer.load_json(path)
+            nodes, root_id = OBDDSerializer.from_dict(data)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Import Failed", f"Could not import file:\n{exc}")
+            return
+        self.load_from_import(nodes, root_id)
+        self.update_status(f"Imported OBDD from {path}")
+        self.update_mode("Ready")
+
+    def load_from_import(self, nodes, root_id):
+        """Replace the current diagram with imported nodes."""
+        self.nodes = nodes
+        for node in self.nodes.values():
+            node.is_root = (node.id == root_id)
+
+        if self.nodes:
+            self.next_node_id = max(self.nodes.keys()) + 1
+        else:
+            self.next_node_id = 0
+        self.next_var_index = sum(1 for node in self.nodes.values() if not node.is_terminal)
+
+        self.selected_node = None
+        self.connecting_mode = False
+        self.connecting_edge_type = None
+        self.connecting_from_node = None
+        self.canvas.config(cursor='arrow')
+
+        self.canvas.delete('all')
+        for node in self.nodes.values():
+            self.draw_node(node)
+        self.draw_all_edges()
 
 
 def main():
