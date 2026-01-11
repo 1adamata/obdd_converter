@@ -583,6 +583,10 @@ ESC: Cancel operation
                 self.draw_node(node)
                 
             self.selected_node = None
+            self.connecting_mode = False
+            self.connecting_edge_type = None
+            self.connecting_from_node = None
+            self.canvas.config(cursor='arrow')
             self.update_status("Cleared all decision nodes")
             
     def update_status(self, message):
