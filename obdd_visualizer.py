@@ -289,9 +289,15 @@ ESC: Cancel operation
         
         # Draw root indicator if this is the root
         if node.is_root:
+            # Calculate offset based on node type
+            if node.is_terminal:
+                node_offset = self.TERMINAL_NODE_SIZE // 2
+            else:
+                node_offset = self.DECISION_NODE_RADIUS
+                
             arrow = self.canvas.create_line(
-                node.x, node.y - self.DECISION_NODE_RADIUS - self.ROOT_INDICATOR_OFFSET,
-                node.x, node.y - self.DECISION_NODE_RADIUS - 5,
+                node.x, node.y - node_offset - self.ROOT_INDICATOR_OFFSET,
+                node.x, node.y - node_offset - 5,
                 arrow=tk.LAST,
                 fill='red',
                 width=3,
@@ -300,7 +306,7 @@ ESC: Cancel operation
             node.canvas_items.append(arrow)
             
             root_text = self.canvas.create_text(
-                node.x, node.y - self.DECISION_NODE_RADIUS - self.ROOT_INDICATOR_OFFSET - 10,
+                node.x, node.y - node_offset - self.ROOT_INDICATOR_OFFSET - 10,
                 text='ROOT',
                 font=('Arial', 10, 'bold'),
                 fill='red',
