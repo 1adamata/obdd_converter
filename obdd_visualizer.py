@@ -122,6 +122,7 @@ R: Set root node
 1: Connect 1-edge
 0: Connect 0-edge
 D: Delete outgoing edges
+        DEL/X: Delete node
 ESC: Cancel operation
         """
         
@@ -167,6 +168,12 @@ ESC: Cancel operation
         
         tk.Button(
             control_frame,
+            text="Delete Node (Del/X)",
+            command=self.delete_node
+        ).pack(pady=5, padx=10, fill=tk.X)
+        
+        tk.Button(
+            control_frame,
             text="Clear All",
             command=self.clear_all
         ).pack(pady=20, padx=10, fill=tk.X)
@@ -192,6 +199,9 @@ ESC: Cancel operation
         self.root.bind('0', lambda e: self.start_edge_connection(0))
         self.root.bind('d', lambda e: self.delete_outgoing_edges())
         self.root.bind('D', lambda e: self.delete_outgoing_edges())
+        self.root.bind('<Delete>', lambda e: self.delete_node())
+        self.root.bind('x', lambda e: self.delete_node())
+        self.root.bind('X', lambda e: self.delete_node())
         self.root.bind('<Escape>', lambda e: self.cancel_operation())
         
     def create_initial_nodes(self):
@@ -504,6 +514,49 @@ ESC: Cancel operation
             self.update_status(f"Deleted outgoing edges from '{node.label}'")
         else:
             self.update_status(f"Node '{node.label}' has no outgoing edges")
+
+    def delete_node(self):
+        """Delete the currently selected decision node."""
+        if self.selected_node is None:
+            messagebox.showwarning("No Selection", "Please select a node first.")
+            return
+            
+        node_id = self.selected_node
+        node = self.nodes.get(node_id)
+        if node is None:
+            self.update_status("Selected node not found")
+            return
+            
+        if node.is_terminal:
+            messagebox.showwarning("Invalid Operation", "Cannot delete terminal nodes 0 and 1.")
+            return
+            
+        if not messagebox.askyesno("Delete Node", f"Delete node '{node.label}' and its edges?"):
+            return
+            
+        # Remove outgoing edges from this node and incoming references from others
+        for item in node.canvas_items:
+            self.canvas.delete(item)
+            
+        for other in self.nodes.values():
+            other.edges_out = [(tid, et) for tid, et in other.edges_out if tid != node_id]
+            
+        # Remove the node from the registry
+        del self.nodes[node_id]
+        
+        # Reset selection and root status if needed
+        if node.is_root:
+            for remaining in self.nodes.values():
+                remaining.is_root = False
+        self.selected_node = None
+        self.connecting_mode = False
+        self.connecting_edge_type = None
+        self.connecting_from_node = None
+        self.canvas.config(cursor='arrow')
+        
+        # Redraw edges to reflect removal
+        self.draw_all_edges()
+        self.update_status(f"Deleted node '{node.label}'")
             
     def cancel_operation(self):
         """Cancel the current operation."""
