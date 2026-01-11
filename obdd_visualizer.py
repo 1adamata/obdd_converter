@@ -139,8 +139,9 @@ class OBDDVisualizer:
     # Constants
     DECISION_NODE_RADIUS = 25
     TERMINAL_NODE_SIZE = 40
-    CANVAS_WIDTH = 800
-    CANVAS_HEIGHT = 600
+    DEFAULT_CANVAS_WIDTH = 800
+    DEFAULT_CANVAS_HEIGHT = 600
+    CONTROL_PANEL_WIDTH = 220
     ROOT_INDICATOR_OFFSET = 40
     
     def __init__(self, root):
@@ -154,12 +155,22 @@ class OBDDVisualizer:
         
         # Interaction state
         self.selected_node = None
+        self.selected_nodes = set()
         self.dragging = False
         self.drag_start_x = 0
         self.drag_start_y = 0
         self.connecting_mode = False
         self.connecting_edge_type = None  # 0 or 1
         self.connecting_from_node = None
+        self.selecting_box = False
+        self.selection_start_x = 0
+        self.selection_start_y = 0
+        self.selection_rect = None
+        self.selection_additive = False
+        self.canvas_width = self.DEFAULT_CANVAS_WIDTH
+        self.canvas_height = self.DEFAULT_CANVAS_HEIGHT
+        self.expand_dx = self.DEFAULT_CANVAS_WIDTH // 2
+        self.expand_dy = self.DEFAULT_CANVAS_HEIGHT // 2
         
         # Setup UI
         self.setup_ui()
@@ -173,26 +184,69 @@ class OBDDVisualizer:
     def setup_ui(self):
         """Setup the user interface."""
         # Main frame
-        main_frame = tk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        self.main_frame = tk.Frame(self.root)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
         
+        # Canvas container (with expand buttons)
+        board_frame = tk.Frame(self.main_frame)
+        board_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        top_btn = tk.Button(
+            board_frame,
+            text=f"Expand Up (+{self.expand_dy})",
+            command=lambda: self.expand_canvas(0, self.expand_dy),
+            wraplength=300,
+            justify=tk.CENTER
+        )
+        top_btn.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+
+        left_btn = tk.Button(
+            board_frame,
+            text=f"Expand Left (+{self.expand_dx})",
+            command=lambda: self.expand_canvas(self.expand_dx, 0),
+            wraplength=100,
+            justify=tk.CENTER
+        )
+        left_btn.grid(row=1, column=0, sticky="ns", padx=2, pady=2)
+
         # Canvas
         self.canvas = tk.Canvas(
-            main_frame,
-            width=self.CANVAS_WIDTH,
-            height=self.CANVAS_HEIGHT,
+            board_frame,
+            width=self.canvas_width,
+            height=self.canvas_height,
             bg='white',
             cursor='arrow'
         )
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+        self.canvas.grid(row=1, column=1, padx=2, pady=2)
+
+        right_btn = tk.Button(
+            board_frame,
+            text=f"Expand Right (+{self.expand_dx})",
+            command=lambda: self.expand_canvas(self.expand_dx, 0),
+            wraplength=100,
+            justify=tk.CENTER
+        )
+        right_btn.grid(row=1, column=2, sticky="ns", padx=2, pady=2)
+
+        bottom_btn = tk.Button(
+            board_frame,
+            text=f"Expand Down (+{self.expand_dy})",
+            command=lambda: self.expand_canvas(0, self.expand_dy),
+            wraplength=300,
+            justify=tk.CENTER
+        )
+        bottom_btn.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+
+        board_frame.grid_columnconfigure(1, weight=1)
+        board_frame.grid_rowconfigure(1, weight=1)
+
         # Bind mouse events
         self.canvas.bind('<Button-1>', self.on_canvas_click)
         self.canvas.bind('<B1-Motion>', self.on_canvas_drag)
         self.canvas.bind('<ButtonRelease-1>', self.on_canvas_release)
-        
+
         # Control panel (scrollable)
-        control_container = tk.Frame(main_frame, width=220, bg='lightgray')
+        control_container = tk.Frame(self.main_frame, width=self.CONTROL_PANEL_WIDTH, bg='lightgray')
         control_container.pack(side=tk.RIGHT, fill=tk.Y)
         control_container.pack_propagate(False)
 
@@ -339,6 +393,8 @@ ESC: Cancel operation
         )
         self.status_label.pack(side=tk.BOTTOM, pady=10)
         self.update_mode("Ready")
+        self.fit_window_to_content()
+        self.root.resizable(False, False)
         
     def setup_keybindings(self):
         """Setup keyboard shortcuts."""
@@ -362,12 +418,12 @@ ESC: Cancel operation
     def create_initial_nodes(self):
         """Create the initial terminal nodes 0 and 1."""
         # Terminal node 0 on the left
-        node0 = Node(self.get_next_node_id(), 150, 500, '0', is_terminal=True)
+        node0 = Node(self.get_next_node_id(), int(self.canvas_width * 0.2), int(self.canvas_height * 0.83), '0', is_terminal=True)
         self.nodes[node0.id] = node0
         self.draw_node(node0)
         
         # Terminal node 1 on the right
-        node1 = Node(self.get_next_node_id(), 650, 500, '1', is_terminal=True)
+        node1 = Node(self.get_next_node_id(), int(self.canvas_width * 0.8), int(self.canvas_height * 0.83), '1', is_terminal=True)
         self.nodes[node1.id] = node1
         self.draw_node(node1)
         
@@ -396,8 +452,8 @@ ESC: Cancel operation
             x = self.nodes[self.selected_node].x
             y = self.nodes[self.selected_node].y - 80
         else:
-            x = self.CANVAS_WIDTH // 2
-            y = self.CANVAS_HEIGHT // 3
+            x = self.canvas_width // 2
+            y = self.canvas_height // 3
             
         suggested_label = self.get_next_variable_label(consume=False)
         label_input = simpledialog.askstring(
@@ -430,7 +486,7 @@ ESC: Cancel operation
             y1 = node.y - self.TERMINAL_NODE_SIZE // 2
             x2 = node.x + self.TERMINAL_NODE_SIZE // 2
             y2 = node.y + self.TERMINAL_NODE_SIZE // 2
-            outline = 'red' if node.id == self.selected_node else 'black'
+            outline = 'red' if node.id in self.selected_nodes else 'black'
             
             square = self.canvas.create_rectangle(
                 x1, y1, x2, y2,
@@ -446,7 +502,7 @@ ESC: Cancel operation
             y1 = node.y - self.DECISION_NODE_RADIUS
             x2 = node.x + self.DECISION_NODE_RADIUS
             y2 = node.y + self.DECISION_NODE_RADIUS
-            outline = 'red' if node.id == self.selected_node else 'black'
+            outline = 'red' if node.id in self.selected_nodes else 'black'
             
             circle = self.canvas.create_oval(
                 x1, y1, x2, y2,
@@ -566,6 +622,7 @@ ESC: Cancel operation
         """Handle canvas click events."""
         # Find which node was clicked
         clicked_node = self.find_node_at(event.x, event.y)
+        shift_held = bool(event.state & 0x0001)
         
         if self.connecting_mode:
             # In connection mode, connect from selected node to clicked node
@@ -582,43 +639,70 @@ ESC: Cancel operation
         else:
             # Normal click - select node and prepare for dragging
             if clicked_node is not None:
-                previous_selected = self.selected_node
-                self.selected_node = clicked_node
-                self.dragging = True
-                self.drag_start_x = event.x
-                self.drag_start_y = event.y
-                if previous_selected is not None and previous_selected in self.nodes:
-                    self.draw_node(self.nodes[previous_selected])
-                self.draw_node(self.nodes[clicked_node])
-                self.update_status(f"Selected node '{self.nodes[clicked_node].label}'")
+                if shift_held:
+                    previous_selected = set(self.selected_nodes)
+                    if clicked_node in self.selected_nodes:
+                        self.selected_nodes.remove(clicked_node)
+                        if self.selected_node == clicked_node:
+                            self.selected_node = next(iter(self.selected_nodes), None)
+                        self.update_status("Updated selection")
+                    else:
+                        self.selected_nodes.add(clicked_node)
+                        self.selected_node = clicked_node
+                        self.update_status(f"Selected node '{self.nodes[clicked_node].label}'")
+                    self.refresh_selection(previous_selected)
+                    self.update_mode("Ready")
+                else:
+                    previous_selected = set(self.selected_nodes)
+                    if clicked_node in self.selected_nodes:
+                        self.selected_node = clicked_node
+                    else:
+                        self.selected_node = clicked_node
+                        self.selected_nodes = {clicked_node}
+                    self.dragging = True
+                    self.drag_start_x = event.x
+                    self.drag_start_y = event.y
+                    self.refresh_selection(previous_selected)
+                    self.update_status(f"Selected node '{self.nodes[clicked_node].label}'")
             else:
-                previous_selected = self.selected_node
-                self.selected_node = None
-                if previous_selected is not None and previous_selected in self.nodes:
-                    self.draw_node(self.nodes[previous_selected])
-                self.update_status("Ready")
-                self.update_mode("Ready")
+                previous_selected = set(self.selected_nodes)
+                if not shift_held:
+                    self.selected_node = None
+                    self.selected_nodes = set()
+                    self.refresh_selection(previous_selected)
+                self.start_selection_box(event.x, event.y, additive=shift_held)
                 
     def on_canvas_drag(self, event):
         """Handle canvas drag events."""
+        if self.selecting_box:
+            self.update_selection_box(event.x, event.y)
+            return
         if self.dragging and self.selected_node is not None:
-            # Move the selected node
-            node = self.nodes[self.selected_node]
             dx = event.x - self.drag_start_x
             dy = event.y - self.drag_start_y
             
-            node.x += dx
-            node.y += dy
+            if self.selected_node in self.selected_nodes and len(self.selected_nodes) > 1:
+                for node_id in self.selected_nodes:
+                    node = self.nodes[node_id]
+                    node.x += dx
+                    node.y += dy
+                    self.draw_node(node)
+            else:
+                node = self.nodes[self.selected_node]
+                node.x += dx
+                node.y += dy
+                self.draw_node(node)
             
             self.drag_start_x = event.x
             self.drag_start_y = event.y
             
-            # Redraw the node and all edges
-            self.draw_node(node)
+            # Redraw edges
             self.draw_all_edges()
             
     def on_canvas_release(self, event):
         """Handle canvas button release events."""
+        if self.selecting_box:
+            self.finish_selection_box(event.x, event.y)
         self.dragging = False
         
     def find_node_at(self, x, y):
@@ -729,9 +813,12 @@ ESC: Cancel operation
             for remaining in self.nodes.values():
                 remaining.is_root = False
         self.selected_node = None
+        self.selected_nodes = set()
         self.connecting_mode = False
         self.connecting_edge_type = None
         self.connecting_from_node = None
+        self.selecting_box = False
+        self.selection_rect = None
         self.canvas.config(cursor='arrow')
         
         # Redraw edges to reflect removal
@@ -765,9 +852,12 @@ ESC: Cancel operation
                 self.draw_node(node)
                 
             self.selected_node = None
+            self.selected_nodes = set()
             self.connecting_mode = False
             self.connecting_edge_type = None
             self.connecting_from_node = None
+            self.selecting_box = False
+            self.selection_rect = None
             self.canvas.config(cursor='arrow')
             self.update_status("Cleared all decision nodes")
             self.update_mode("Ready")
@@ -779,6 +869,86 @@ ESC: Cancel operation
     def update_mode(self, message):
         """Update the mode label."""
         self.mode_label.config(text=f"Mode: {message}")
+        
+    def refresh_selection(self, previous_selected):
+        """Redraw nodes affected by selection changes."""
+        affected = set(previous_selected) | set(self.selected_nodes)
+        for node_id in affected:
+            node = self.nodes.get(node_id)
+            if node is not None:
+                self.draw_node(node)
+        self.draw_all_edges()
+        
+    def start_selection_box(self, x, y, additive=False):
+        """Begin a selection box drag."""
+        self.selecting_box = True
+        self.selection_additive = additive
+        self.selection_start_x = x
+        self.selection_start_y = y
+        if self.selection_rect is not None:
+            self.canvas.delete(self.selection_rect)
+        self.selection_rect = self.canvas.create_rectangle(
+            x, y, x, y,
+            outline='blue',
+            dash=(4, 2)
+        )
+        self.update_status("Box select: drag to choose nodes")
+        self.update_mode("Box selecting")
+        
+    def update_selection_box(self, x, y):
+        """Update the selection box rectangle."""
+        if self.selection_rect is None:
+            return
+        self.canvas.coords(
+            self.selection_rect,
+            self.selection_start_x,
+            self.selection_start_y,
+            x,
+            y
+        )
+        
+    def finish_selection_box(self, x, y):
+        """Finish selection box and select nodes inside it."""
+        self.selecting_box = False
+        if self.selection_rect is not None:
+            self.canvas.delete(self.selection_rect)
+            self.selection_rect = None
+        x1 = min(self.selection_start_x, x)
+        y1 = min(self.selection_start_y, y)
+        x2 = max(self.selection_start_x, x)
+        y2 = max(self.selection_start_y, y)
+        
+        selected = set()
+        for node_id, node in self.nodes.items():
+            if x1 <= node.x <= x2 and y1 <= node.y <= y2:
+                selected.add(node_id)
+                
+        previous_selected = set(self.selected_nodes)
+        if self.selection_additive:
+            self.selected_nodes |= selected
+        else:
+            self.selected_nodes = selected
+        self.selected_node = next(iter(self.selected_nodes), None)
+        self.refresh_selection(previous_selected)
+        if selected:
+            self.update_status(f"Selected {len(selected)} node(s)")
+        else:
+            self.update_status("Ready")
+        self.update_mode("Ready")
+
+    def fit_window_to_content(self):
+        """Resize window to fit current content."""
+        self.root.update_idletasks()
+        width = self.main_frame.winfo_reqwidth()
+        height = self.main_frame.winfo_reqheight()
+        self.root.geometry(f"{width}x{height}")
+
+    def expand_canvas(self, dx, dy):
+        """Expand the canvas size and resize the window to fit."""
+        self.canvas_width += dx
+        self.canvas_height += dy
+        self.canvas.config(width=self.canvas_width, height=self.canvas_height)
+        self.fit_window_to_content()
 
     def get_root_id(self):
         """Return the current root node ID, or None if not set."""
@@ -837,9 +1007,12 @@ ESC: Cancel operation
         self.next_var_index = sum(1 for node in self.nodes.values() if not node.is_terminal)
 
         self.selected_node = None
+        self.selected_nodes = set()
         self.connecting_mode = False
         self.connecting_edge_type = None
         self.connecting_from_node = None
+        self.selecting_box = False
+        self.selection_rect = None
         self.canvas.config(cursor='arrow')
 
         self.canvas.delete('all')
